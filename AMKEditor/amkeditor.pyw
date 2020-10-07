@@ -12,6 +12,7 @@ from struct import pack, unpack
 import webbrowser
 import wave
 import pyaudio
+import datetime
 import threading
 import tkinter as tk
 import tkinter.messagebox as messagebox
@@ -342,25 +343,21 @@ class Editor:
             return -3
         amkData[index][2] = wav
         amkData[index][3].clear()
-
         # 8-bit Unsigned
         if wavInfo[1] == 1:
             for i in range(wavLength):
                 wavSample = int(wavInfo[3]*i/wavLength)*wavInfo[0]*wavInfo[1]
                 amkData[index][3].append((i, unpack('B', wavData[wavSample:wavSample+1])[0]/128*50))
-
         # 16-bit Signed
         if wavInfo[1] == 2:
             for i in range(wavLength):
                 wavSample = int(wavInfo[3]*i/wavLength)*wavInfo[0]*wavInfo[1]
                 amkData[index][3].append((i, 50+(unpack('h', wavData[wavSample:wavSample+2])[0]/32768*50)))
-
         # 32-bit Signed
         if wavInfo[1] == 4:
             for i in range(wavLength):
                 wavSample = int(wavInfo[3]*i/wavLength)*wavInfo[0]*wavInfo[1]
                 amkData[index][3].append((i, 50+(unpack('i', wavData[wavSample:wavSample+4])[0]/2147483648*50)))
-
         return 0
 
     # ---------------------- #
@@ -393,7 +390,6 @@ class Editor:
     def updateAud(self, event=None):
         index = self.aniList.curselection()
         pos = self.audScroll.get()[0]
-        self.audBarPlay.config(state='disabled')
         self.audBarButton.config(state='disabled')
         self.audWave.delete('wave')
         self.audWave.coords('marker', 0, 9, 0, 99)
@@ -401,6 +397,7 @@ class Editor:
             self.aniEntry.config(state='normal')
             self.aniName.set(amkData[index[0]][0])
             self.audBarOpen.config(state='normal')
+            self.audBarPlay.config(state='normal')
             self.audBarAdd.config(state='normal')
             self.audBarEntry.config(state='normal')
             self.audBarLength.set(amkData[index[0]][1])
@@ -408,7 +405,6 @@ class Editor:
             self.audWave.config(scrollregion=(0, 0, amkData[index[0]][1]*4+1, 0))
             wavLength = len(amkData[index[0]][3])
             if wavLength > 0:
-                self.audBarPlay.config(state='normal')
                 self.audBarButton.config(state='normal')
                 self.audWave.create_rectangle(1, 1, wavLength-2, 98, fill='white', outline='white', tags='wave')
                 self.audWave.create_line(0, 50, wavLength-1, 50, fill='gray', tags='wave')
@@ -418,6 +414,7 @@ class Editor:
             self.aniName.set('')
             self.aniEntry.config(state='disabled')
             self.audBarOpen.config(state='disabled')
+            self.audBarPlay.config(state='disabled')
             self.audBarAdd.config(state='disabled')
             self.audBarLength.set(0)
             self.audBarEntry.config(state='disabled')
@@ -919,7 +916,7 @@ class AudioPlayback(threading.Thread):
     def __init__(self, file):
         global playbackStop
         threading.Thread.__init__(self)
-        index = editor.aniList.curselection()[0]
+        self.index = editor.aniList.curselection()[0]
         pos = editor.audWave.coords('marker')
 
         # Disable editor functionality.
@@ -933,45 +930,50 @@ class AudioPlayback(threading.Thread):
         editor.audBarButton.config(state='disabled')
         editor.audBarEntry.config(state='disabled')
         editor.audTime.config(state='disabled')
-        timer = editor.audWave.create_line(pos[0], 1, pos[2], 99, fill='red')
+        self.timer = editor.audWave.create_line(pos[0], 1, pos[2], 99, fill='red')
 
         # Set the preview image to the key before the marker.
-        preKey = 0
-        marker = int(pos[0]/4)
-        for i in range(1, len(amkData[index][4])):
-            if amkData[index][4][i][0] > marker:
-                value = amkData[index][4][i-1][1]+amkData[index][4][i-1][2]*6
+        self.preKey = 0
+        self.marker = int(pos[0]/4)
+        for i in range(1, len(amkData[self.index][4])):
+            if amkData[self.index][4][i][0] > self.marker:
+                value = amkData[self.index][4][i-1][1]+amkData[self.index][4][i-1][2]*6
                 editor.preImage.config(image=editor.img['P'+str(value).zfill(3)])
-                preKey = i
+                self.preKey = i
                 break
 
-        # Load the WAV file.
-        file.setpos(min(max(int(pos[0]*file.getframerate()/240), 0), file.getnframes()-1))
-        stream = pya.open(
-            format = pya.get_format_from_width(file.getsampwidth()),
-            channels = file.getnchannels(),
-            rate = file.getframerate(),
-            output = True
-        )
+        # If the animation has a WAV file, play the audio along with the animation until the audio finishes.
+        # Otherwise, if no WAV file is associated, play the animation until it surpasses its length.
+        if amkData[self.index][2] == -1:
+            epoch = datetime.datetime.now()
+            while self.marker < amkData[self.index][1]:
+                if playbackStop:
+                    playbackStop = False
+                    break
+                time = datetime.datetime.now()-epoch
+                self.update(move=pos[0]+240*time.total_seconds())
+        else:
+            # Load the WAV file.
+            file.setpos(min(max(int(pos[0]*file.getframerate()/240), 0), file.getnframes()-1))
+            stream = pya.open(
+                format = pya.get_format_from_width(file.getsampwidth()),
+                channels = file.getnchannels(),
+                rate = file.getframerate(),
+                output = True
+            )
 
-        # Play the WAV file.
-        data = file.readframes(1024)
-        while data:
-            if playbackStop:
-                playbackStop = False
-                break
-            stream.write(data)
+            # Play the WAV file.
             data = file.readframes(1024)
-            move = file.tell()/file.getframerate()*240
-            editor.audWave.coords(timer, move, 1, move, 99)
-            marker = int(move/4)
-            if preKey < len(amkData[index][4]) and amkData[index][4][preKey][0] < marker:
-                value = amkData[index][4][preKey][1]+amkData[index][4][preKey][2]*6
-                editor.preImage.config(image=editor.img['P'+str(value).zfill(3)])
-                preKey += 1
+            while data:
+                if playbackStop:
+                    playbackStop = False
+                    break
+                stream.write(data)
+                data = file.readframes(1024)
+                self.update(move=file.tell()/file.getframerate()*240)
 
-        # Close the WAV file.
-        stream.close()
+            # Close the WAV file.
+            stream.close()
 
         # Enable editor functionality.
         root.nametowidget(root['menu']).entryconfig(txt['MNB_FIL'], state='normal')
@@ -983,7 +985,16 @@ class AudioPlayback(threading.Thread):
         editor.audBarButton.config(state='normal')
         editor.audBarEntry.config(state='normal')
         editor.audTime.config(state='normal')
-        editor.audWave.delete(timer)
+        editor.audWave.delete(self.timer)
+
+    # Update the preview key.
+    def update(self, move):
+        editor.audWave.coords(self.timer, move, 1, move, 99)
+        self.marker = int(move/4)
+        if self.preKey < len(amkData[self.index][4]) and amkData[self.index][4][self.preKey][0] < self.marker:
+            value = amkData[self.index][4][self.preKey][1]+amkData[self.index][4][self.preKey][2]*6
+            editor.preImage.config(image=editor.img['P'+str(value).zfill(3)])
+            self.preKey += 1
 
 # -------------------------- #
 # --- Create Main Window --- #
